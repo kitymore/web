@@ -1,0 +1,101 @@
+variables:
+  APP_NAME: nginxvueimage
+  BUILDDIR: admin # 打包文件名
+  PRODDIR: admin # 线上文件名
+  BACKUPDIR: admin_back # 备份文件夹
+  DEPLOY_SERVER: 192.168.1.201
+  PORT: 8088
+
+services:
+  - docker:dind  
+
+stages: # 分段
+  - repInstall
+  - install
+  - build
+  - creatImage
+  - deploy
+
+cache: # 安装分支设置缓存
+ # key: ${CI_COMMIT_REF_SLUG}
+  paths:
+    - node_modules
+    - admin
+
+repInstall-job:
+  stage: repInstall
+  image: "node:16.13"
+  tags: # runner 标签(注册runner时设置的，可在 admin->runner中查看)
+    - docker
+  only:
+    refs:
+      - main
+    changes:
+      - package.json
+  script:
+    - echo "依赖发生变化,开始install"
+    - npm install
+    - echo "完成install"
+
+install-job:
+  stage: install
+  image: "node:16.13"
+  tags: # runner 标签(注册runner时设置的，可在 admin->runner中查看)
+    - docker
+  only:
+    refs:
+      - main
+  script:
+    - echo "开始install"
+    - if [ ! -d "./node_modules/" ];then   npm install;   else   echo "缓存存在,跳过install"; fi
+    - echo "完成install"
+
+build-job:
+  stage: build
+  image: "node:16.13"
+  tags: # runner 标签(注册runner时设置的，可在 admin->runner中查看)
+    - docker
+  only:
+    - main
+  script:
+    - echo "开始代码打包"
+    - npm run build
+    - echo "完成代码打包"
+    - ls dist
+createImage-job:
+  stage: creatImage
+  tags: # runner 标签(注册runner时设置的，可在 admin->runner中查看)
+    - docker
+  only:
+    - main
+  before_script:
+    - docker info
+    - mkdir -p $HOME/.docker
+    - echo $DOCKER_AUTH_CONFIG > /root/.docker/config.json
+    - echo "开始构建镜像推到远程仓库"
+  script:
+    - echo "building image"
+    - pwd
+    - docker login $REGISTRY
+    - docker build --build-arg APP_NAME=$APP_NAME  -f Dockerfile -t $REGISTRY/gher/$APP_NAME:latest .
+    - echo "build successfully"
+    - echo "pushing image to remote repo..."
+    - docker push $REGISTRY/gher/$APP_NAME:latest
+    - echo "success"
+deploy-job:
+  stage: deploy
+  # runner 标签(注册runner时设置的，可在 admin->runner中查看)
+  tags: 
+    - $DEPLOY_SERVER
+  only:
+    - main
+  before_script:
+    - echo "在目标服务器执行job内容：拉取镜像启动镜像容器"
+  script:
+    - if [ $(docker ps -aq --filter name= $APP_NAME) ]; then docker rm -f $APP_NAME;fi
+    - docker login $REGISTRY
+    - docker pull $REGISTRY/gher/$APP_NAME:latest
+    - docker run -itd -p $PORT:80    --privileged=true  --ulimit nofile=65535   --name $APP_NAME $REGISTRY/gher/$APP_NAME:latest
+    - echo "容器启动成功"
+  after_script:
+    - echo "项目部署完成更新"
